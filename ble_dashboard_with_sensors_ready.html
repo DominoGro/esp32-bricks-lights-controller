@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ESP32‑S3 BLE PRO — Dashboard z Sensor Characteristics</title>
+<style>
+:root{
+  --bg:#0d1016; --card:rgba(255,255,255,0.06); --text:#fff;
+  --on:#00ff88; --off:#ff4d4d;
+}
+body{font-family:Inter,Segoe UI,Roboto,Arial,Helvetica,sans-serif;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);color:var(--text);margin:0;padding:20px}
+.container{max-width:980px;margin:0 auto}
+.header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+h1{margin:0 0 8px 0;font-size:20px}
+.card{background:var(--card);padding:16px;border-radius:14px;margin-top:16px;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+.row{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+.led-btn{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:12px;border:none;cursor:pointer;background:rgba(255,255,255,0.03);color:var(--text);min-width:160px}
+.led-icon{width:34px;height:34px;border-radius:50%;display:inline-block;flex-shrink:0;transition:all .18s ease;box-shadow:0 0 6px rgba(0,0,0,0.4)}
+.led-off{background:#520000;box-shadow:0 0 6px #300}
+.led-on{background:var(--on);box-shadow:0 0 20px rgba(0,255,136,0.22);animation:ledPulse 1.2s infinite ease-in-out}
+@keyframes ledPulse{0%{box-shadow:0 0 8px rgba(0,255,136,0.14)}50%{box-shadow:0 0 20px rgba(0,255,136,0.28)}100%{box-shadow:0 0 8px rgba(0,255,136,0.14)}}
+.status{display:flex;align-items:center;gap:10px}
+.status-dot{width:12px;height:12px;border-radius:50%;background:#bcbcbc;box-shadow:0 2px 6px rgba(0,0,0,0.4)}
+.status-dot.on{background:#2ecc71}
+.status-text{font-size:14px;color:#dbeafe}
+.small{font-size:13px;color:#b8c7d6}
+.slider{width:100%}
+.sensor-value{font-weight:700;margin-left:8px;color:#fff;background:rgba(0,0,0,0.18);padding:4px 8px;border-radius:8px}
+.connect-btn{background:linear-gradient(135deg,#1f9bff,#0066cc);color:white;padding:10px 14px;border-radius:10px;border:none;cursor:pointer}
+.impulse-btn{background:linear-gradient(135deg,#ff6b6b,#ff3b30);color:white;padding:10px 12px;border-radius:10px;border:none;cursor:pointer}
+.log{background:#071323;color:#cfeffd;padding:8px;border-radius:8px;height:120px;overflow:auto;font-family:monospace;font-size:13px}
+@media(max-width:700px){ .row{flex-direction:column;align-items:stretch} .led-btn{width:100%} }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div>
+      <h1>ESP32‑S3 BLE PRO — Dashboard</h1>
+      <div class="small">3×LED + SERVO + IMPULSE — z sensor characteristics (notify)</div>
+    </div>
+    <div class="status" aria-live="polite">
+      <div id="statusDot" class="status-dot"></div>
+      <div id="statusText" class="status-text">niepołączono</div>
+    </div>
+  </div>
+
+  <div style="margin-top:12px">
+    <button id="connectBtn" class="connect-btn">Połącz z ESP32</button>
+  </div>
+
+  <div class="card">
+    <h3>LED-y (IoT Dashboard style)</h3>
+    <div class="row">
+      <button id="led1btn" class="led-btn" aria-pressed="false">
+        <span id="led1icon" class="led-icon led-off"></span>
+        <span>Steady lights</span>
+        <span id="led1sensor" class="sensor-value">—</span>
+        <span style="margin-left:auto" id="led1label" class="small">OFF</span>
+      </button>
+
+      <button id="led2btn" class="led-btn" aria-pressed="false">
+        <span id="led2icon" class="led-icon led-off"></span>
+        <span>Warning lights</span>
+        <span id="led2sensor" class="sensor-value">—</span>
+        <span style="margin-left:auto" id="led2label" class="small">OFF</span>
+      </button>
+
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Beacon lights</h3>
+    <div class="row">
+      <button id="impulseBtn" class="impulse-btn">IMPULS</button>
+      <div style="margin-left:auto" class="small">wysyła 1600µs → po puszczeniu 1000µs</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Log</h3>
+    <div id="log" class="log"></div>
+  </div>
+</div>
+
+<script>
+/* ---------- UUIDs (dostosuj do firmware) ---------- */
+const SERVICE_UUID = '48f8f5b0-af2f-4c01-9135-1234567890ab';
+const STEADY_UUID     = '48f8f5b0-af2f-4c01-9135-1234567890ac';
+const WARNING_UUID     = '48f8f5b0-af2f-4c01-9135-1234567890ad';
+const BEACON_UUID = '48f8f5b0-af2f-4c01-9135-1234567890b0';
+
+/* Sensor (notify) UUIDs for each LED — device must implement them */
+const STEADY_SENSOR_UUID = '48f8f5b0-af2f-4c01-9135-1234567890c1';
+const WARNING_SENSOR_UUID = '48f8f5b0-af2f-4c01-9135-1234567890c2';
+
+/* ---------- State ---------- */
+let device = null, server = null, service = null;
+let steadyChar=null, warningChar=null;
+let beaconChar=null;
+let steadySensor=null, warningSensor=null;
+
+let reconnectInterval = null;
+
+/* ---------- UI elements ---------- */
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const logEl = document.getElementById('log');
+
+function log(...args){
+  const t = new Date().toLocaleTimeString();
+  logEl.textContent = `[${t}] ${args.join(' ')}` + logEl.textContent;
+}
+
+/* ---------- Helpers ---------- */
+function setConnectedUI(connected){
+  if(connected){
+    statusDot.classList.add('on');
+    statusText.textContent = 'połączono';
+  } else {
+    statusDot.classList.remove('on');
+    statusText.textContent = 'niepołączono';
+  }
+}
+
+/* Convert little-endian uint16 from DataView/Buffer */
+function readUint16LE(dataView){
+  if(!dataView) return 0;
+  if(dataView.byteLength >= 2) return dataView.getUint8(0) | (dataView.getUint8(1) << 8);
+  if(dataView.byteLength === 1) return dataView.getUint8(0);
+  return 0;
+}
+
+/* ---------- Connect & cache characteristics (from RNT tutorial style) ---------- */
+async function requestDeviceAndConnect(){
+  try{
+    log('requestDevice...');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'ESP32' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    await connectAndSetup();
+  }catch(e){
+    log('requestDevice failed', e);
+    setConnectedUI(false);
+  }
+}
+
+async function connectAndSetup(){
+  try{
+    log('connecting GATT...');
+    server = await device.gatt.connect();
+    service = await server.getPrimaryService(SERVICE_UUID);
+
+    // command characteristics
+    steadyChar = await service.getCharacteristic(STEADY_UUID);
+    warningChar = await service.getCharacteristic(WARNING_UUID);
+	beaconChar = await service.getCharacteristic(BEACON_UUID);
+
+    // sensor / notify characteristics (if present on device)
+    try{
+      steadySensor = await service.getCharacteristic(STEADY_SENSOR_UUID);
+      await steadySensor.startNotifications();
+      steadySensor.addEventListener('characteristicvaluechanged', e=>{
+        const v = readUint16LE(e.target.value);
+        document.getElementById('led1sensor').textContent = v;
+      });
+      log('Steady lights sensor notifications started');
+    }catch(e){ log('Steady lights sensor not available'); }
+
+    try{
+      warningSensor = await service.getCharacteristic(WARNING_SENSOR_UUID);
+      await warningSensor.startNotifications();
+      warningSensor.addEventListener('characteristicvaluechanged', e=>{
+        const v = readUint16LE(e.target.value);
+        document.getElementById('led2sensor').textContent = v;
+      });
+      log('Warning lights sensor notifications started');
+    }catch(e){ log('Warning lights sensor not available'); }
+
+    
+
+    // Try initial reads for LED states
+    try { const v = await steadyChar.readValue(); setLedUI(1, v.getUint8(0) === 1); } catch(e){}
+    try { const v = await warningChar.readValue(); setLedUI(2, v.getUint8(0) === 1); } catch(e){}
+
+    setConnectedUI(true);
+    log('connected and ready');
+    if(reconnectInterval){ clearInterval(reconnectInterval); reconnectInterval=null; }
+  }catch(err){
+    log('connectAndSetup error', err);
+    setConnectedUI(false);
+  }
+}
+
+/* ---------- Disconnect handling (auto reconnect attempt) ---------- */
+function onDisconnected(e){
+  log('device disconnected');
+  setConnectedUI(false);
+  if (device){
+    if(reconnectInterval) return;
+    reconnectInterval = setInterval(async ()=>{
+      if(device.gatt.connected){ clearInterval(reconnectInterval); reconnectInterval=null; return; }
+      try{
+        log('attempting reconnect...');
+        await connectAndSetup();
+        if(device.gatt.connected){ clearInterval(reconnectInterval); reconnectInterval=null; }
+      }catch(err){ log('reconnect failed'); }
+    }, 3000);
+  }
+}
+
+/* ---------- UI helpers for LED buttons ---------- */
+function setLedUI(n, on){
+  const icon = document.getElementById('led'+n+'icon');
+  const label = document.getElementById('led'+n+'label');
+  const btn = document.getElementById('led'+n+'btn');
+  if(on){
+    icon.classList.remove('led-off'); icon.classList.add('led-on');
+    label.textContent = 'ON';
+    btn.setAttribute('aria-pressed','true');
+  } else {
+    icon.classList.remove('led-on'); icon.classList.add('led-off');
+    label.textContent = 'OFF';
+    btn.setAttribute('aria-pressed','false');
+  }
+}
+
+/* ---------- Wire button actions (writes + optimistic UI) ---------- */
+async function writeLed(n, ch){
+  try{
+    const currentOn = document.getElementById('led'+n+'btn').getAttribute('aria-pressed') === 'true';
+    const wantOn = !currentOn;
+    setLedUI(n, wantOn); // optimistic update
+    await ch.writeValue(Uint8Array.of(wantOn ? 1 : 0));
+    log('LED'+n+' write ->', wantOn?1:0);
+  }catch(e){
+    log('writeLed error', e);
+    setLedUI(n, ! (document.getElementById('led'+n+'btn').getAttribute('aria-pressed') === 'true'));
+  }
+}
+
+/* Button wiring */
+document.getElementById('led1btn').addEventListener('click', ()=>{ if(steadyChar) writeLed(1, steadyChar); else log('Steady lights not ready'); });
+document.getElementById('led2btn').addEventListener('click', ()=>{ if(warningChar) writeLed(2, warningChar); else log('Warning lights not ready'); });
+
+/* Impulse (pointer down/up) with debounce and vibration */
+let impulseLocked=false;
+const impulseBtn = document.getElementById('impulseBtn');
+if(impulseBtn){
+  impulseBtn.addEventListener('pointerdown', async ()=>{
+    if(impulseLocked) return;
+    impulseLocked=true;
+    if(navigator.vibrate) navigator.vibrate(40);
+    if(beaconChar){
+      try{
+        await beaconChar.writeValue(Uint8Array.of(160 & 0xFF, (160>>8)&0xFF));
+        log('impulse down 1600us');
+      }catch(e){ log('impulse down error', e); impulseLocked=false; }
+    } else log('Beacon lights not ready');
+  });
+  impulseBtn.addEventListener('pointerup', async ()=>{
+    if(beaconChar){
+      try{
+        await beaconChar.writeValue(Uint8Array.of(1000 & 0xFF, (1000>>8)&0xFF));
+        log('impulse up 1000us');
+      }catch(e){ log('impulse up error', e); }
+    }
+    impulseLocked=false;
+  });
+}
+
+/* Connect button */
+document.getElementById('connectBtn').addEventListener('click', async ()=>{
+  if(device && device.gatt && device.gatt.connected){
+    log('disconnecting...');
+    device.gatt.disconnect();
+    setConnectedUI(false);
+    return;
+  }
+  await requestDeviceAndConnect();
+});
+
+/* Clean up on unload */
+window.addEventListener('beforeunload', ()=>{
+  try{ if(device && device.gatt.connected) device.gatt.disconnect(); }catch(e){}
+});
+
+</script>
+</body>
+</html>
