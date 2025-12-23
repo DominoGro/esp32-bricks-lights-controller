@@ -259,11 +259,11 @@ if(impulseBtn){
         log('impulse down 1600us');
       }catch(e){ log('impulse down error', e); impulseLocked=false; }
     } else log('Beacon lights not ready');
-  });
- setTimeout(() => {
+	  setTimeout(() => {
 	impulseLocked=false;
 	 log('Impulse unlocked'); 
  }, 400);
+  });
 }
 
 /* Connect button */
