@@ -255,20 +255,15 @@ if(impulseBtn){
     if(navigator.vibrate) navigator.vibrate(40);
     if(beaconChar){
       try{
-        await beaconChar.writeValue(Uint8Array.of(1600 & 0xFF, (1600>>8)&0xFF));
+        await beaconChar.writeValue(Uint8Array.of(1));
         log('impulse down 1600us');
       }catch(e){ log('impulse down error', e); impulseLocked=false; }
     } else log('Beacon lights not ready');
   });
-  impulseBtn.addEventListener('pointerup', async ()=>{
-    if(beaconChar){
-      try{
-        await beaconChar.writeValue(Uint8Array.of(1000 & 0xFF, (1000>>8)&0xFF));
-        log('impulse up 1000us');
-      }catch(e){ log('impulse up error', e); }
-    }
-    impulseLocked=false;
-  });
+ setTimeout(() => {
+	impulseLocked=false;
+	 log('Impulse unlocked'); 
+ }, 400);
 }
 
 /* Connect button */
